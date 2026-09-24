@@ -1,0 +1,12 @@
+{
+  "name": "creem-mcp",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "mcp-server-creem"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "creem-mcp-server": "latest"
+  }
+}
