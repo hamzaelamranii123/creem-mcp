@@ -7,6 +7,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
-    "creem-sdk": "latest"
+    "mcp-server-creem": "github:Selenium39/mcp-server-creem"
   }
 }
