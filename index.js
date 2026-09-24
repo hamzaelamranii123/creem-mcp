@@ -94,6 +94,27 @@ function createMcpServer() {
         description: "Retrieve a Creem subscription and its status.",
         inputSchema: { type: "object", properties: { subscription_id: { type: "string" } }, required: ["subscription_id"] },
       },
+      {
+        name: "get_transaction",
+        description: "Retrieve a Creem transaction by transaction ID.",
+        inputSchema: {
+          type: "object",
+          properties: { transaction_id: { type: "string" } },
+          required: ["transaction_id"],
+        },
+      },
+      {
+        name: "list_transactions",
+        description: "Search Creem transactions, optionally filtered by customer ID.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            customer_id: { type: "string" },
+            page_number: { type: "integer", minimum: 1 },
+            page_size: { type: "integer", minimum: 1 },
+          },
+        },
+      },
     ],
   }));
 
@@ -123,6 +144,18 @@ function createMcpServer() {
           return jsonResult(await creemRequest(`/checkouts/${encodeURIComponent(args.checkout_id)}`));
         case "get_subscription":
           return jsonResult(await creemRequest(`/subscriptions/${encodeURIComponent(args.subscription_id)}`));
+        case "get_transaction": {
+          const params = new URLSearchParams({ transaction_id: args.transaction_id });
+          return jsonResult(await creemRequest(`/transactions?${params}`));
+        }
+        case "list_transactions": {
+          const params = new URLSearchParams();
+          if (args.customer_id) params.set("customer_id", args.customer_id);
+          if (args.page_number !== undefined) params.set("page_number", String(args.page_number));
+          if (args.page_size !== undefined) params.set("page_size", String(args.page_size));
+          const suffix = params.toString() ? `?${params}` : "";
+          return jsonResult(await creemRequest(`/transactions/search${suffix}`));
+        }
         default:
           return errorResult(`Unknown tool: ${name}`);
       }
