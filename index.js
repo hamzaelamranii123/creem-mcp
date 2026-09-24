@@ -1,6 +1,8 @@
 const express = require("express");
+const crypto = require("crypto");
 const { Server } = require("@modelcontextprotocol/sdk/server/index.js");
 const { SSEServerTransport } = require("@modelcontextprotocol/sdk/server/sse.js");
+const { StreamableHTTPServerTransport } = require("@modelcontextprotocol/sdk/server/streamableHttp.js");
 const {
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -11,27 +13,21 @@ const port = process.env.PORT || 3000;
 const creemBaseUrl = (
   process.env.CREEM_API_BASE_URL || "https://api.creem.io/v1"
 ).replace(/\/$/, "");
-const transports = new Map();
+const streamableSessions = new Map();
+const sseSessions = new Map();
 
 function jsonResult(value) {
-  return {
-    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
-  };
+  return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
 }
 
 function errorResult(error) {
   const message = error instanceof Error ? error.message : String(error);
-  return {
-    isError: true,
-    content: [{ type: "text", text: message }],
-  };
+  return { isError: true, content: [{ type: "text", text: message }] };
 }
 
 async function creemRequest(path, options = {}) {
   const apiKey = process.env.CREEM_API_KEY;
-  if (!apiKey) {
-    throw new Error("CREEM_API_KEY is not configured on the server.");
-  }
+  if (!apiKey) throw new Error("CREEM_API_KEY is not configured on the server.");
 
   const response = await fetch(`${creemBaseUrl}${path}`, {
     ...options,
@@ -42,18 +38,11 @@ async function creemRequest(path, options = {}) {
       ...(options.headers || {}),
     },
   });
-
   const text = await response.text();
   let data;
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = text;
-  }
-
+  try { data = text ? JSON.parse(text) : {}; } catch { data = text; }
   if (!response.ok) {
-    const details = typeof data === "string" ? data : JSON.stringify(data);
-    throw new Error(`Creem API ${response.status}: ${details}`);
+    throw new Error(`Creem API ${response.status}: ${typeof data === "string" ? data : JSON.stringify(data)}`);
   }
   return data;
 }
@@ -68,41 +57,18 @@ function createMcpServer() {
     tools: [
       {
         name: "create_product",
-        description:
-          "Create a product in Creem. Pass the exact product fields expected by your Creem account in the body object.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            body: {
-              type: "object",
-              description:
-                "Creem product payload, for example name, description, price, currency, and billing details.",
-              additionalProperties: true,
-            },
-          },
-          required: ["body"],
-        },
+        description: "Create a product in Creem. Pass the exact product payload in body.",
+        inputSchema: { type: "object", properties: { body: { type: "object", additionalProperties: true } }, required: ["body"] },
       },
       {
         name: "list_products",
-        description: "List or search products available in the Creem account.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string" },
-            page: { type: "string" },
-            limit: { type: "string" },
-          },
-        },
+        description: "List or search products in Creem.",
+        inputSchema: { type: "object", properties: { query: { type: "string" }, page: { type: "string" }, limit: { type: "string" } } },
       },
       {
         name: "get_product",
-        description: "Retrieve one Creem product by its product ID.",
-        inputSchema: {
-          type: "object",
-          properties: { product_id: { type: "string" } },
-          required: ["product_id"],
-        },
+        description: "Retrieve a Creem product by ID.",
+        inputSchema: { type: "object", properties: { product_id: { type: "string" } }, required: ["product_id"] },
       },
       {
         name: "create_checkout",
@@ -113,49 +79,30 @@ function createMcpServer() {
             product_id: { type: "string" },
             success_url: { type: "string" },
             customer_email: { type: "string" },
-            body: {
-              type: "object",
-              description: "Optional exact Creem checkout payload fields.",
-              additionalProperties: true,
-            },
+            body: { type: "object", additionalProperties: true },
           },
           required: ["product_id"],
         },
       },
       {
         name: "get_checkout",
-        description: "Retrieve a Creem checkout and its payment status.",
-        inputSchema: {
-          type: "object",
-          properties: { checkout_id: { type: "string" } },
-          required: ["checkout_id"],
-        },
+        description: "Retrieve a Creem checkout and payment status.",
+        inputSchema: { type: "object", properties: { checkout_id: { type: "string" } }, required: ["checkout_id"] },
       },
       {
         name: "get_subscription",
-        description: "Retrieve a Creem subscription and its current status.",
-        inputSchema: {
-          type: "object",
-          properties: { subscription_id: { type: "string" } },
-          required: ["subscription_id"],
-        },
+        description: "Retrieve a Creem subscription and its status.",
+        inputSchema: { type: "object", properties: { subscription_id: { type: "string" } }, required: ["subscription_id"] },
       },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params;
-
     try {
       switch (name) {
         case "create_product":
-          return jsonResult(
-            await creemRequest("/products", {
-              method: "POST",
-              body: JSON.stringify(args.body),
-            })
-          );
-
+          return jsonResult(await creemRequest("/products", { method: "POST", body: JSON.stringify(args.body) }));
         case "list_products": {
           const params = new URLSearchParams();
           if (args.query) params.set("query", args.query);
@@ -164,33 +111,18 @@ function createMcpServer() {
           const suffix = params.toString() ? `?${params}` : "";
           return jsonResult(await creemRequest(`/products/search${suffix}`));
         }
-
         case "get_product":
           return jsonResult(await creemRequest(`/products/${encodeURIComponent(args.product_id)}`));
-
         case "create_checkout": {
-          const body = {
-            ...(args.body || {}),
-            product_id: args.product_id,
-          };
+          const body = { ...(args.body || {}), product_id: args.product_id };
           if (args.success_url) body.success_url = args.success_url;
           if (args.customer_email) body.customer = { email: args.customer_email };
-          return jsonResult(
-            await creemRequest("/checkouts", {
-              method: "POST",
-              body: JSON.stringify(body),
-            })
-          );
+          return jsonResult(await creemRequest("/checkouts", { method: "POST", body: JSON.stringify(body) }));
         }
-
         case "get_checkout":
           return jsonResult(await creemRequest(`/checkouts/${encodeURIComponent(args.checkout_id)}`));
-
         case "get_subscription":
-          return jsonResult(
-            await creemRequest(`/subscriptions/${encodeURIComponent(args.subscription_id)}`)
-          );
-
+          return jsonResult(await creemRequest(`/subscriptions/${encodeURIComponent(args.subscription_id)}`));
         default:
           return errorResult(`Unknown tool: ${name}`);
       }
@@ -198,44 +130,71 @@ function createMcpServer() {
       return errorResult(error);
     }
   });
-
   return server;
 }
 
+function cors(req, res, next) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, Mcp-Session-Id, Last-Event-ID");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+}
+
+app.use(cors);
 app.use(express.json());
 
-app.get("/health", (req, res) => {
-  res.json({ ok: true, service: "creem-mcp-server" });
-});
+app.get("/", (req, res) => res.json({ ok: true, service: "creem-mcp-server" }));
+app.get("/health", (req, res) => res.json({ ok: true, service: "creem-mcp-server" }));
 
-app.get("/mcp", async (req, res) => {
-  try {
-    const transport = new SSEServerTransport("/messages", res);
-    const server = createMcpServer();
-    transports.set(transport.sessionId, { transport, server });
-    res.on("close", () => transports.delete(transport.sessionId));
-    await server.connect(transport);
-  } catch (error) {
-    console.error("MCP connection error:", error);
-    if (!res.headersSent) res.status(500).send("MCP connection failed");
+// Modern MCP transport used by Claude and other remote MCP clients.
+async function handleStreamableHttp(req, res) {
+  const sessionId = req.headers["mcp-session-id"];
+  let entry = sessionId ? streamableSessions.get(sessionId) : undefined;
+
+  if (!entry && req.method !== "POST") {
+    return res.status(400).json({ error: "Missing or invalid MCP session" });
   }
+
+  if (!entry) {
+    const server = createMcpServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => crypto.randomUUID(),
+      onsessioninitialized: (newSessionId) => {
+        streamableSessions.set(newSessionId, { transport, server });
+      },
+    });
+    entry = { transport, server };
+    await server.connect(transport);
+  }
+
+  try {
+    await entry.transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error("MCP HTTP error:", error);
+    if (!res.headersSent) res.status(500).json({ error: "MCP request failed" });
+  }
+}
+
+app.all("/mcp", handleStreamableHttp);
+
+// Legacy SSE compatibility for clients that still use the older transport.
+app.get("/sse", async (req, res) => {
+  const transport = new SSEServerTransport("/messages", res);
+  const server = createMcpServer();
+  sseSessions.set(transport.sessionId, { transport, server });
+  res.on("close", () => sseSessions.delete(transport.sessionId));
+  await server.connect(transport);
 });
 
 app.post("/messages", async (req, res) => {
   const sessionId = req.query.sessionId;
-  const entry = sessionId && transports.get(sessionId);
-  if (!entry) {
-    return res.status(400).send("Invalid or missing sessionId");
-  }
-
-  try {
-    await entry.transport.handlePostMessage(req, res);
-  } catch (error) {
-    console.error("MCP message error:", error);
-    if (!res.headersSent) res.status(500).send("MCP message failed");
-  }
+  const entry = sessionId && sseSessions.get(sessionId);
+  if (!entry) return res.status(400).send("Invalid or missing sessionId");
+  await entry.transport.handlePostMessage(req, res);
 });
 
-app.listen(port, () => {
+app.listen(port, "0.0.0.0", () => {
   console.log(`Creem MCP server listening on port ${port}`);
 });
