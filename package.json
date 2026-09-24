@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "mcp-server-creem"
+    "start": "npx -y @modelcontextprotocol/sdk mcp-server-creem"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
-    "creem-mcp-server": "latest"
+    "creem-sdk": "latest"
   }
 }
